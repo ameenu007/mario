@@ -1,0 +1,429 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Super Platform Adventure</title>
+<style>
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #101827;
+  color: white;
+  font-family: Arial, sans-serif;
+  text-align: center;
+}
+h1 { font-size: 25px; margin: 16px 0 8px; }
+#hud { margin: 8px; font-weight: bold; }
+#game {
+  display: block;
+  width: min(960px, 100%);
+  height: auto;
+  margin: auto;
+  border: 3px solid white;
+  background: #80d8ff;
+  image-rendering: pixelated;
+}
+#help { color: #cbd5e1; font-size: 14px; padding: 10px; }
+.controls {
+  display: flex;
+  justify-content: center;
+  gap: 12px;
+  padding: 10px;
+}
+.controls button, #restart {
+  border: 0;
+  border-radius: 10px;
+  padding: 14px 20px;
+  background: #fbbf24;
+  font-weight: bold;
+  font-size: 17px;
+  cursor: pointer;
+  touch-action: none;
+}
+#restart { margin: 5px; background: #34d399; }
+button:active { transform: scale(.96); }
+</style>
+</head>
+<body>
+
+<h1>🍄 Super Platform Adventure</h1>
+<div id="hud">🪙 Coins: 0 | ❤️ Lives: 3</div>
+<canvas id="game" width="960" height="540"></canvas>
+<div id="help">
+  Move: ← → or A/D · Jump: ↑, W or Space · Collect every coin and reach the flag!
+</div>
+<div class="controls">
+  <button id="left">⬅ LEFT</button>
+  <button id="jump">⬆ JUMP</button>
+  <button id="right">RIGHT ➡</button>
+</div>
+<button id="restart">Restart Game</button>
+
+<script>
+const canvas = document.getElementById("game");
+const ctx = canvas.getContext("2d");
+const W = canvas.width, H = canvas.height;
+const hud = document.getElementById("hud");
+const WORLD = 3000;
+const keys = {};
+let player, platforms, coins, enemies, camera;
+let collected, lives, gameState, frame, checkpoint;
+
+function makeLevel() {
+  platforms = [
+    {x:0,y:480,w:600,h:60},
+    {x:680,y:480,w:430,h:60},
+    {x:1190,y:480,w:480,h:60},
+    {x:1760,y:480,w:430,h:60},
+    {x:2280,y:480,w:720,h:60},
+
+    {x:180,y:390,w:130,h:22},
+    {x:390,y:325,w:120,h:22},
+    {x:550,y:400,w:100,h:22},
+    {x:750,y:380,w:140,h:22},
+    {x:920,y:310,w:120,h:22},
+    {x:1130,y:395,w:130,h:22},
+    {x:1320,y:340,w:150,h:22},
+    {x:1510,y:275,w:120,h:22},
+    {x:1740,y:385,w:130,h:22},
+    {x:1920,y:320,w:150,h:22},
+    {x:2160,y:390,w:100,h:22},
+    {x:2360,y:350,w:150,h:22},
+    {x:2580,y:290,w:150,h:22},
+    {x:2780,y:380,w:100,h:22}
+  ];
+
+  coins = [];
+  const coinSpots = [
+    [220,350],[265,350],[425,285],[585,360],
+    [780,340],[830,340],[950,270],[1160,355],
+    [1360,300],[1410,300],[1545,235],[1790,345],
+    [1970,280],[2200,350],[2400,310],[2630,250],
+    [2810,340],[500,440],[1000,440],[1600,440],
+    [2050,440],[2450,440],[2900,440]
+  ];
+  coinSpots.forEach(([x,y]) => coins.push({
+    x, y, taken:false
+  }));
+
+  enemies = [
+    {x:340,y:448,min:300,max:560,vx:1.4,alive:true},
+    {x:810,y:448,min:700,max:1050,vx:1.7,alive:true},
+    {x:1370,y:448,min:1220,max:1630,vx:1.8,alive:true},
+    {x:1870,y:448,min:1780,max:2150,vx:1.6,alive:true},
+    {x:2450,y:448,min:2320,max:2800,vx:2,alive:true}
+  ];
+}
+
+function resetGame() {
+  player = {
+    x:60,y:400,w:30,h:40,
+    vx:0,vy:0,speed:4.5,jump:-13,
+    grounded:false, invincible:0
+  };
+  camera = 0;
+  collected = 0;
+  lives = 3;
+  frame = 0;
+  gameState = "playing";
+  checkpoint = 60;
+  makeLevel();
+  updateHUD();
+}
+
+function updateHUD() {
+  hud.textContent =
+    `🪙 Coins: ${collected}/${coins.length} | ❤️ Lives: ${lives}`;
+}
+
+function overlap(a,b) {
+  return a.x < b.x+b.w && a.x+a.w > b.x &&
+         a.y < b.y+b.h && a.y+a.h > b.y;
+}
+
+function respawn() {
+  lives--;
+  if (lives <= 0) {
+    gameState = "lost";
+    updateHUD();
+    return;
+  }
+  player.x = checkpoint;
+  player.y = 380;
+  player.vx = 0;
+  player.vy = 0;
+  player.invincible = 100;
+  updateHUD();
+}
+
+function update() {
+  if (gameState !== "playing") return;
+  frame++;
+
+  const left = keys.ArrowLeft || keys.a || keys.A;
+  const right = keys.ArrowRight || keys.d || keys.D;
+  const jump = keys.ArrowUp || keys.w || keys.W || keys[" "];
+
+  player.vx = (right ? player.speed : 0) -
+              (left ? player.speed : 0);
+
+  if (jump && player.grounded) {
+    player.vy = player.jump;
+    player.grounded = false;
+  }
+
+  player.vy += 0.55;
+  if (player.vy > 13) player.vy = 13;
+
+  // Horizontal movement and world boundaries
+  player.x += player.vx;
+  player.x = Math.max(0, Math.min(WORLD-player.w, player.x));
+
+  // Vertical movement and platform collisions
+  const oldY = player.y;
+  player.y += player.vy;
+  player.grounded = false;
+
+  for (const p of platforms) {
+    if (player.x + player.w > p.x &&
+        player.x < p.x + p.w &&
+        oldY + player.h <= p.y &&
+        player.y + player.h >= p.y &&
+        player.vy >= 0) {
+      player.y = p.y - player.h;
+      player.vy = 0;
+      player.grounded = true;
+    }
+  }
+
+  if (player.y > H + 100) {
+    respawn();
+    return;
+  }
+
+  // Coins
+  for (const c of coins) {
+    if (!c.taken && overlap(player,
+        {x:c.x-10,y:c.y-10,w:20,h:20})) {
+      c.taken = true;
+      collected++;
+      updateHUD();
+    }
+  }
+
+  // Enemies
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    e.x += e.vx;
+    if (e.x < e.min || e.x > e.max) e.vx *= -1;
+
+    const enemyBox = {x:e.x,y:e.y,w:30,h:32};
+    if (player.invincible <= 0 && overlap(player,enemyBox)) {
+      if (player.vy > 1 && oldY + player.h <= e.y + 12) {
+        e.alive = false;
+        player.vy = -8;
+      } else {
+        respawn();
+        return;
+      }
+    }
+  }
+
+  if (player.invincible > 0) player.invincible--;
+
+  // Checkpoint
+  if (player.x > 1650) checkpoint = 1690;
+  if (player.x > 2250) checkpoint = 2300;
+
+  camera = Math.max(0, Math.min(
+    WORLD-W, player.x-W*0.38
+  ));
+
+  // Win condition
+  if (player.x > WORLD-100) {
+    if (collected === coins.length) {
+      gameState = "won";
+    } else {
+      gameState = "needCoins";
+    }
+  }
+}
+
+function drawBackground() {
+  const sky = ctx.createLinearGradient(0,0,0,H);
+  sky.addColorStop(0,"#69c8ff");
+  sky.addColorStop(1,"#d8f6ff");
+  ctx.fillStyle = sky;
+  ctx.fillRect(0,0,W,H);
+
+  // Parallax hills
+  for (let i=0;i<9;i++) {
+    const x = i*240 - (camera*0.25)%240;
+    ctx.fillStyle = i%2 ? "#83d68b" : "#66c779";
+    ctx.beginPath();
+    ctx.arc(x+80,490,130,Math.PI,0);
+    ctx.fill();
+  }
+
+  // Clouds
+  for (let i=0;i<8;i++) {
+    const x = i*190 - (camera*0.15)%190;
+    const y = 65+(i%3)*50;
+    ctx.fillStyle = "white";
+    ctx.beginPath();
+    ctx.arc(x,y,22,0,Math.PI*2);
+    ctx.arc(x+25,y-12,28,0,Math.PI*2);
+    ctx.arc(x+53,y,22,0,Math.PI*2);
+    ctx.fill();
+  }
+}
+
+function draw() {
+  drawBackground();
+
+  ctx.save();
+  ctx.translate(-camera,0);
+
+  // Ground and platforms
+  for (const p of platforms) {
+    ctx.fillStyle = "#9b6037";
+    ctx.fillRect(p.x,p.y,p.w,p.h);
+    ctx.fillStyle = "#37b957";
+    ctx.fillRect(p.x,p.y,p.w,8);
+    ctx.fillStyle = "#b97848";
+    for (let x=p.x+10;x<p.x+p.w;x+=35) {
+      ctx.fillRect(x,p.y+20,20,5);
+    }
+  }
+
+  // Coins
+  for (const c of coins) {
+    if (c.taken) continue;
+    const r = 9 + Math.sin(frame*0.12+c.x)*2;
+    ctx.fillStyle = "#ffbf00";
+    ctx.beginPath();
+    ctx.ellipse(c.x,c.y,r,12,0,0,Math.PI*2);
+    ctx.fill();
+    ctx.strokeStyle = "#fff176";
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  }
+
+  // Enemies
+  for (const e of enemies) {
+    if (!e.alive) continue;
+    ctx.fillStyle = "#9b3f24";
+    ctx.beginPath();
+    ctx.roundRect(e.x,e.y,30,32,8);
+    ctx.fill();
+    ctx.fillStyle = "white";
+    ctx.fillRect(e.x+5,e.y+7,7,9);
+    ctx.fillRect(e.x+18,e.y+7,7,9);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(e.x+8,e.y+10,3,5);
+    ctx.fillRect(e.x+21,e.y+10,3,5);
+    ctx.fillStyle = "#4c251b";
+    ctx.fillRect(e.x+3,e.y+27,10,5);
+    ctx.fillRect(e.x+18,e.y+27,10,5);
+  }
+
+  // Goal flag
+  ctx.fillStyle = "#555";
+  ctx.fillRect(WORLD-90,300,7,180);
+  ctx.fillStyle = "#ff4057";
+  ctx.beginPath();
+  ctx.moveTo(WORLD-83,305);
+  ctx.lineTo(WORLD-25,325);
+  ctx.lineTo(WORLD-83,350);
+  ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = "#ffe082";
+  ctx.beginPath();
+  ctx.arc(WORLD-86,298,8,0,Math.PI*2);
+  ctx.fill();
+
+  // Player character
+  if (player.invincible <= 0 || frame%8<4) {
+    ctx.fillStyle = "#e63e35";
+    ctx.fillRect(player.x+3,player.y,24,10);
+    ctx.fillRect(player.x,player.y+8,30,8);
+    ctx.fillStyle = "#ffd0a1";
+    ctx.fillRect(player.x+5,player.y+13,20,12);
+    ctx.fillStyle = "#e63e35";
+    ctx.fillRect(player.x+3,player.y+25,24,10);
+    ctx.fillStyle = "#2348ad";
+    ctx.fillRect(player.x+3,player.y+31,10,7);
+    ctx.fillRect(player.x+18,player.y+31,10,7);
+    ctx.fillStyle = "#fff";
+    ctx.fillRect(player.x+19,player.y+15,5,5);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(player.x+22,player.y+17,3,4);
+    ctx.fillStyle = "#633a26";
+    ctx.fillRect(player.x+12,player.y+24,13,4);
+  }
+
+  ctx.restore();
+
+  if (gameState !== "playing") {
+    ctx.fillStyle = "#111827cc";
+    ctx.fillRect(0,0,W,H);
+    ctx.textAlign = "center";
+    ctx.fillStyle = "white";
+    ctx.font = "bold 42px Arial";
+
+    if (gameState === "won") {
+      ctx.fillText("🎉 YOU WIN!",W/2,H/2-20);
+      ctx.font = "22px Arial";
+      ctx.fillText("You collected every coin!",W/2,H/2+25);
+    } else if (gameState === "needCoins") {
+      ctx.fillText("Almost there!",W/2,H/2-20);
+      ctx.font = "21px Arial";
+      ctx.fillText(
+        `Collect all coins first: ${collected}/${coins.length}`,
+        W/2,H/2+25
+      );
+    } else {
+      ctx.fillText("GAME OVER",W/2,H/2-20);
+      ctx.font = "22px Arial";
+      ctx.fillText("Press Restart to try again",W/2,H/2+25);
+    }
+  }
+}
+
+function loop() {
+  update();
+  draw();
+  requestAnimationFrame(loop);
+}
+
+window.addEventListener("keydown",e=>{
+  if (["ArrowLeft","ArrowRight","ArrowUp"," "].includes(e.key))
+    e.preventDefault();
+  keys[e.key] = true;
+});
+window.addEventListener("keyup",e=>keys[e.key]=false);
+window.addEventListener("blur",()=> {
+  for (const k in keys) keys[k]=false;
+});
+
+function bindButton(id,key) {
+  const el = document.getElementById(id);
+  const down = e => { e.preventDefault(); keys[key]=true; };
+  const up = e => { e.preventDefault(); keys[key]=false; };
+  el.addEventListener("pointerdown",down);
+  el.addEventListener("pointerup",up);
+  el.addEventListener("pointerleave",up);
+  el.addEventListener("pointercancel",up);
+}
+bindButton("left","ArrowLeft");
+bindButton("right","ArrowRight");
+bindButton("jump","ArrowUp");
+document.getElementById("restart").onclick=resetGame;
+
+resetGame();
+loop();
+</script>
+</body>
+</html>
